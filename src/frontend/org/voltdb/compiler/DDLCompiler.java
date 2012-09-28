@@ -237,6 +237,25 @@ public class DDLCompiler {
             );
 
     /**
+     * SET statement regex.
+     * Capture groups are tagged as (1) and (2) in comments below.
+     * Not handling escaped quotes with the regex. Just doing greedy grabbing
+     * of everything between the first quote following the '=' and the last
+     * quote before the ';'. Escapes are handled by code. The code must also
+     * check for an escaped closing quote throw an exception.
+     */
+    static final Pattern setPattern = Pattern.compile(
+            "(?i)" +                            // (ignore case)
+            "\\A" +                             // (start statement)
+            "SET\\s+" +                         // SET
+            "([\\w.$]+)" +                      // (1) <name>
+            "\\s*=\\s*" +                       // = with optional surrounding whitespace
+            "\"(.*)\"" +                        // (2) <value> (all data between first and last quote)
+            ";\\z"                              // (end statement)
+            );
+
+    /**
+     * REPLICATE TABLE statement regex.
      * NB supports only unquoted table and column names
      *
      * Regex Description:
@@ -265,7 +284,7 @@ public class DDLCompiler {
      *  partition, replicate, or role.
      * <pre>
      * (?i) -- ignore case
-     * ((?<=\\ACREATE\\s{0,1024})PROCEDURE|\\APARTITION|\\AREPLICATE|\\ACREATE\\s{0,1024})ROLE) -- voltdb ddl
+     * ((?<=\\ACREATE\\s{0,1024})PROCEDURE|\\APARTITION|\\AREPLICATE|\\ACREATE\\s{0,1024})ROLE|\\SET) -- voltdb ddl
      *    [capture group 1]
      *      (?<=\\ACREATE\\s{1,1024})PROCEDURE -- create procedure ddl
      *          (?<=\\ACREATE\\s{0,1024}) -- CREATE zero-width positive lookbehind
@@ -570,6 +589,41 @@ public class DDLCompiler {
                         roleName));
             }
             org.voltdb.catalog.Group catGroup = m_groupMap.add(roleName);
+            if (statementMatcher.group(2) != null) {
+                for (String tokenRaw : StringUtils.split(statementMatcher.group(2), ',')) {
+                    String token = tokenRaw.trim().toLowerCase();
+                    if (token.equals("adhoc")) {
+                        catGroup.setAdhoc(true);
+                    }
+                    else if (token.equals("sysproc")) {
+                        catGroup.setSysproc(true);
+                    }
+                    else if (token.equals("defaultproc")) {
+                        catGroup.setDefaultproc(true);
+                    }
+                    else {
+                        throw m_compiler.new VoltCompilerException(String.format(
+                            "Bad flag \"%s\" to CREATE ROLE DDL statement: \"%s\", " +
+                            "expected syntax: CREATE ROLE <role> [WITH adhoc|sysproc|defaultproc ...]",
+                            token, statement.substring(0,statement.length()-1))); // remove trailing semicolon
+                    }
+                }
+            }
+            return true;
+        }
+
+        // matches if it is SET <name> = "<value>"
+        // group 1 is the name
+        // group 2 is the value without surrounding quotes (but may have escapes)
+        statementMatcher = setPattern.matcher(statement);
+        if( statementMatcher.matches()) {
+            String name = statementMatcher.group(1);
+            if (m_groupMap.get(name) != null) {
+                throw m_compiler.new VoltCompilerException(String.format(
+                        "Role name \"%s\" in CREATE ROLE DDL statement already exists.",
+                        name));
+            }
+            org.voltdb.catalog.Group catGroup = m_groupMap.add(name);
             if (statementMatcher.group(2) != null) {
                 for (String tokenRaw : StringUtils.split(statementMatcher.group(2), ',')) {
                     String token = tokenRaw.trim().toLowerCase();
